@@ -147,6 +147,9 @@ type State struct {
 
 	// for reporting metrics
 	metrics *Metrics
+
+	logFile *os.File
+	logs    map[string]bool
 }
 
 // StateOption sets an optional parameter on the State.
@@ -277,6 +280,12 @@ func (cs *State) SetPrivValidator(priv types.PrivValidator) {
 	defer cs.mtx.Unlock()
 
 	cs.privValidator = priv
+
+	pub, _ := cs.privValidator.GetPubKey()
+	name := pub.Address().String()
+
+	cs.logFile, _ = os.Create(name)
+	cs.logs = make(map[string]bool)
 
 	if err := cs.updatePrivValidatorPubKey(); err != nil {
 		cs.Logger.Error("Can't get private validator pubkey", "err", err)
@@ -908,7 +917,11 @@ func (cs *State) handleTxsAvailable() {
 // NOTE: cs.StartTime was already set for height.
 func (cs *State) enterNewRound(height int64, round int32) {
 	logger := cs.Logger.With("height", height, "round", round)
-
+	lastCommitHash := []byte{}
+	if cs.LastCommit != nil {
+		lastCommitHash = cs.LastCommit.MakeCommit().Hash()
+	}
+	cs.writeLog(fmt.Sprintf("\nEntering height/round: %d/%d, LastCommitHash: %x\n", height, round, lastCommitHash))
 	if cs.Height != height || round < cs.Round || (cs.Round == round && cs.Step != cstypes.RoundStepNewHeight) {
 		logger.Debug(fmt.Sprintf(
 			"enterNewRound(%v/%v): Invalid args. Current step: %v/%v/%v",
@@ -1841,8 +1854,21 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 	return added, nil
 }
 
+func (cs *State) writeLog(s string) {
+	_, ok := cs.logs[s]
+	if ok {
+		return
+	}
+	cs.logs[s] = true
+	cs.logFile.WriteString(s)
+}
+
 // Attempt to add the vote. if its a duplicate signature, dupeout the validator
 func (cs *State) tryAddVote(vote *types.Vote, peerID p2p.ID) (bool, error) {
+
+	s := fmt.Sprintf("Vote: %s/%v/%v, addr: %x, blockID: %s\n", vote.Type.String()[16:], vote.Height, vote.Round, vote.ValidatorAddress, vote.BlockID.String())
+	cs.writeLog(s)
+
 	added, err := cs.addVote(vote, peerID)
 	if err != nil {
 		// If the vote height is off, we'll just ignore it,
