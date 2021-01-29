@@ -390,8 +390,12 @@ func TestByzantinePrecommit(t *testing.T) {
 		// make first val byzantine
 		css[i].writeLog(fmt.Sprintf("Validator %d!\n", i+1))
 		if i == BYZ_INDEX {
-			css[BYZ_INDEX].writeLog("I am byzantine!\n")
+			css[i].writeLog("I am byzantine!\n")
 			conRI = NewByzantineReactor(conR)
+		}
+
+		if i == VICTIM_PEER_INDEX {
+			css[i].writeLog("I am victim!\n")
 		}
 
 		reactors[i] = conRI
@@ -452,7 +456,7 @@ func TestByzantinePrecommit(t *testing.T) {
 					peer.Send(DataChannel, MustEncode(msg))
 				}
 
-				if i == VICTIM_PEER_INDEX {
+				if i == 0 {
 					peer.Send(VoteChannel, MustEncode(&VoteMessage{prevote}))
 					peer.Send(VoteChannel, MustEncode(&VoteMessage{precommit}))
 				} else {
@@ -515,32 +519,45 @@ func TestByzantinePrecommit(t *testing.T) {
 	peers := switches[BYZ_INDEX].Peers().List()
 
 	// partition A
-	ind0 := getSwitchIndex(switches, peers[VICTIM_PEER_INDEX])
+	ind0 := getSwitchIndex(switches, peers[0])
 
 	// partition B
-	ind1 := getSwitchIndex(switches, peers[0])
+	ind1 := getSwitchIndex(switches, peers[1])
 	ind2 := getSwitchIndex(switches, peers[2])
 	p2p.Connect2Switches(switches, ind1, ind2)
 
-	m := 0
+	precommitVotes := [4]bool{false, false, false, false}
 	for {
 		for i := 0; i < N; i++ {
 			v := css[BYZ_INDEX].Votes.Precommits(0).GetByIndex(int32(i))
 			if v != nil {
 				if v.BlockID.Hash != nil {
-					peers[VICTIM_PEER_INDEX].Send(VoteChannel, MustEncode(&VoteMessage{v}))
-					m |= (0x1 << i)
+					peers[0].Send(VoteChannel, MustEncode(&VoteMessage{v}))
+					precommitVotes[i] = true
 				}
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
-		if m == 0x6 {
+
+		c := 0
+		for j := 0; j < 4; j++ {
+			if precommitVotes[j] == true {
+				c++
+			}
+		}
+
+		// Make sure victim has received two pre-commits from other
+		if c >= 2 {
 			break
 		}
 	}
 
-	// wait for someone in the big partition (B) to make a block
-	<-blocksSubs[ind2].Out()
+	for i := 0; i < 4; i++ {
+		css[i].writeLog("=========== Healing partition =========== \n")
+	}
+
+	// wait for someone in the small partition (B) to make a block
+	<-blocksSubs[ind0].Out()
 
 	t.Log("A block has been committed. Healing partition")
 	p2p.Connect2Switches(switches, ind0, ind1)
